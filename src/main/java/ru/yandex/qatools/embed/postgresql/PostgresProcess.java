@@ -4,13 +4,17 @@ import de.flapdoodle.embed.process.config.IRuntimeConfig;
 import de.flapdoodle.embed.process.config.io.ProcessOutput;
 import de.flapdoodle.embed.process.config.store.IDownloadConfig;
 import de.flapdoodle.embed.process.distribution.Distribution;
+import de.flapdoodle.embed.process.distribution.Platform;
 import de.flapdoodle.embed.process.extract.IExtractedFileSet;
+import de.flapdoodle.embed.process.io.Processors;
 import de.flapdoodle.embed.process.io.Slf4jLevel;
 import de.flapdoodle.embed.process.io.Slf4jStreamProcessor;
+import de.flapdoodle.embed.process.io.StreamToLineProcessor;
 import de.flapdoodle.embed.process.io.directories.IDirectory;
 import de.flapdoodle.embed.process.io.progress.Slf4jProgressListener;
 import de.flapdoodle.embed.process.runtime.Executable;
 import de.flapdoodle.embed.process.runtime.ProcessControl;
+import de.flapdoodle.embed.process.runtime.Processes;
 import de.flapdoodle.embed.process.store.IArtifactStore;
 import de.flapdoodle.embed.process.store.IMutableArtifactStore;
 import de.flapdoodle.embed.process.store.PostgresArtifactStore;
@@ -35,6 +39,7 @@ import java.util.Set;
 
 import static de.flapdoodle.embed.process.io.file.Files.forceDelete;
 import static java.lang.System.currentTimeMillis;
+import static java.lang.System.exit;
 import static java.lang.Thread.sleep;
 import static java.util.Arrays.asList;
 import static java.util.Collections.emptySet;
@@ -279,6 +284,29 @@ public class PostgresProcess extends AbstractPGProcess<PostgresExecutable, Postg
                 sleep(100);
             } catch (InterruptedException ie) { /* safe to ignore */ }
         } while (trial++ < MAX_CREATEDB_TRIALS);
+
+        if (trial >= MAX_CREATEDB_TRIALS) {
+            // Something went wrong, try to dig up some debug information;
+            final Long starterPid = process.getPid();
+            if (starterPid != null) {
+                if (!Processes.isProcessRunning(Platform.detect(), starterPid)) {
+                    try {
+                        LOGGER.error("Postgres startup process {} exited with code {}", starterPid, process.waitFor());
+                    } catch (InterruptedException e) {
+                        LOGGER.error("Interrupted while waiting for supposedly ended process, not retrying");
+                    }
+                } else {
+                    LOGGER.error("Postgres startup process {} still running");
+                }
+            } else {
+                LOGGER.warn("Unable to detect PID of the executed process");
+            }
+
+            final ProcessOutput outputConfig = runtimeConfig.getProcessOutput();
+
+            Processors.connect(process.getReader(), StreamToLineProcessor.wrap(outputConfig.getError()));
+            Processors.connect(process.getError(), StreamToLineProcessor.wrap(outputConfig.getError()));
+        }
     }
 
     /**
